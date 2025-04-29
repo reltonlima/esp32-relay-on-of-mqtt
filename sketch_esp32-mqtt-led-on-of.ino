@@ -1,80 +1,85 @@
-// ESP32 MQTT LED Control
-// Este código controla um LED interno do ESP32 via MQTT.
-// O LED pode ser ligado ou desligado enviando mensagens "on" ou "off" para o tópico especificado.
-// Certifique-se de ter as bibliotecas PubSubClient e WiFi instaladas no Arduino IDE.
-// Para instalar as bibliotecas, vá em: Sketch -> Include Library -> Manage Libraries
-// e busque por "PubSubClient" e "WiFi".
-// Para usar este código, você precisará de um broker MQTT. Você pode usar o broker público em http://broker.emqx.io.
-// Para testar, você pode usar o MQTT.fx ou qualquer outro cliente MQTT.
-// Certifique-se de alterar as credenciais do Wi-Fi e o tópico MQTT conforme necessário.
-// Author: Relton Lima
-// Date: 2023-10-01
-// License: GNU GPLv3
-// This program is free software: you can redistribute it and/or modify
 #include <WiFi.h>
 #include <PubSubClient.h>
-
-// Configurações de Wi-Fi
-const char* SSID = "YOU_WIFI_SSID";
-const char* PASSWORD = "YOU_WIFI_SSID_PASS";
+#include "secrets.h"
+// Configurações Wi-Fi
+const char* ssid = SSID_WIFI; // Pega o nome da rede Wi-Fi do arquivo secrets.h
+const char* password = PASS_WIFI; // Pega a senha da rede Wi-Fi do arquivo secrets.h
+// Configurações do broker MQTT
+// Você pode usar o EMQX public broker ou outro de sua preferência
+// https://www.emqx.com/en/broker
+// Para o EMQX public broker, use o seguinte endereço
+// broker.emqx.io
 
 // Configurações MQTT
-const char* MQTT_BROKER = "broker.emqx.io"; // Broker público para teste
-const int MQTT_PORT = 1883;
-const char* MQTT_TOPIC = "esp32/led"; // Tópico para enviar comandos
-const char* MQTT_CLIENT_ID = "ESP32_LED_CONTROL"; // ID único
-const String clientId = String(MQTT_CLIENT_ID) + "_" + String(random(0xffff), HEX);
+const char* mqtt_server = BROKER_MQTT; // Pega o endereço do broker MQTT do arquivo secrets.h
+const char* topic = "plugashop/relay/command";  // Tópico para receber comandos
+const char* status_topic = "plugashop/relay/status"; // Tópico para enviar status
 
 WiFiClient espClient;
-PubSubClient mqttClient(espClient);
+PubSubClient client(espClient);
 
-// Pino do LED interno (GPIO 2 para a maioria das placas ESP32)
-const int LED_PIN = 2;
+// Configuração do relé
+const int relayPin = 23;
+bool relayState = false;
 
-// Função para conectar ao Wi-Fi
-void connectWiFi() {
-  WiFi.begin(SSID, PASSWORD);
-  Serial.print("Conectando ao Wi-Fi");
+void setup_wifi() {
+  delay(10);
+  Serial.println();
+  Serial.print("Conectando a ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConectado ao Wi-Fi!");
-  Serial.println(clientId);
+
+  Serial.println("");
+  Serial.println("WiFi conectado");
+  Serial.println("Endereço IP: ");
+  Serial.println(WiFi.localIP());
 }
 
-// Função de callback para receber mensagens MQTT
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Mensagem recebida no tópico: ");
-  Serial.println(topic);
-
-  // Converte o payload para String
-  String message;
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Mensagem recebida [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  
+  char message[length + 1];
   for (int i = 0; i < length; i++) {
-    message += (char)payload[i];
+    message[i] = (char)payload[i];
   }
+  message[length] = '\0';
+  Serial.println(message);
 
-  // Controla o LED conforme o comando
-  if (message == "on") {
-    digitalWrite(LED_PIN, HIGH);
-    Serial.println("LED ligado");
-  } else if (message == "off") {
-    digitalWrite(LED_PIN, LOW);
-    Serial.println("LED desligado");
+  // Controle do relé
+  if (strcmp(message, "on") == 0) {
+    digitalWrite(relayPin, HIGH);
+    relayState = true;
+    client.publish(status_topic, "Relay: ON");
+  } else if (strcmp(message, "off") == 0) {
+    digitalWrite(relayPin, LOW);
+    relayState = false;
+    client.publish(status_topic, "Relay: OFF");
   }
 }
 
-// Função para reconectar ao broker MQTT
-void reconnectMQTT() {
-  while (!mqttClient.connected()) {
-    Serial.print("Conectando ao broker MQTT...");
-    if (mqttClient.connect(clientId.c_str())) {
-      Serial.println("Conectado!");
-      mqttClient.subscribe(MQTT_TOPIC); // Inscreve-se no tópico
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Tentando conexão MQTT...");
+    
+    // Cria um ID de cliente randomico
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+
+    if (client.connect(clientId.c_str())) {
+      Serial.println("Conectado");
+      client.subscribe(topic);
     } else {
-      Serial.print("Falha. Código de erro: ");
-      Serial.print(mqttClient.state());
-      Serial.println(" Tentando novamente em 5s...");
+      Serial.print("Falha, rc=");
+      Serial.print(client.state());
+      Serial.println(" Tentando novamente em 5 segundos");
       delay(5000);
     }
   }
@@ -82,22 +87,17 @@ void reconnectMQTT() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW); // Inicia com LED desligado
-
-  connectWiFi();
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
-  mqttClient.setCallback(mqttCallback); // Define a função de callback
-
-  // Ip wifi
-  Serial.println("Conectado ao Wi-Fi!");
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP()); // Adicione esta linha
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, LOW);
+  
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
 }
 
 void loop() {
-  if (!mqttClient.connected()) {
-    reconnectMQTT();
+  if (!client.connected()) {
+    reconnect();
   }
-  mqttClient.loop(); // Mantém a conexão MQTT ativa
+  client.loop();
 }
